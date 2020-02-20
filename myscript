@@ -1,0 +1,199 @@
+#! usr/bin/python3
+import os,subprocess,shutil,sys,re,json
+
+#a function that can make sure the user input is either Y or N
+def inputcheck(input):
+ while True:
+  if input == "Y" or input == "N":
+   break
+  partial = input("instruction can not be found, please do it again (Y/N): ")
+  continue
+
+#a function that can make sure the input taxonomic group is valid
+def findgroup(taxonomic_group):
+ taxonomic_group = input("please choose the taxonomic group: ")
+ #check whether the input taxonomic_group actually exist
+ subprocess.call("esearch -db taxonomy -query {}|efetch -format docsum >groupsummary ".format(taxonomic_group),shell=True)
+ while os.path.getsize("groupsummary") == 0:
+  taxonomic_group = input ("can't fien the taxonomic group name in database, give another group name:")
+  subprocess.call("esearch -db taxonomy -query {}|efetch -format docsum >groupsummary ".format(taxonomic_group),shell=True)
+  if os.path.getsize("groupsummary") != 0:
+   break
+ return taxonomic_group
+
+ ################################### 
+ ######get_the_protein_sequence#####
+ ###################################
+while True:
+
+ protein_family = input("please choose the protein family: ")
+ group = findgroup("group")
+
+ #ask the user whether partial sequence is needed
+ partial = input("do you want to include the partial sequences or not (Y/N): ")
+ inputcheck(partial)
+ 
+ #ask the user whether partial sequence is needed
+ predicted = input("do you want to include the predicted sequences or not (Y/N): ")
+ inputcheck(predicted)
+
+ #using edirect package to get the sequence output file from ncbi protein database
+ if partial =="Y" and predicted == "Y":
+  subprocess.call("esearch -db protein -query '{} AND {}'|efetch -format fasta > pseq.fasta".format(protein_family,group),shell=True)
+ elif partial == "N" and predicted == "Y":
+  subprocess.call("esearch -db protein -query '{} AND {} NOT partial'|efetch -format fasta > pseq.fasta".format(protein_family,group),shell=True)
+ elif partial == "N" and predicted == "N":
+  subprocess.call("esearch -db protein -query '{} AND {} NOT partial NOT predicted'|efetch -format fasta > pseq.fasta".format(protein_family,group),shell=True)
+
+ #######################################
+ ######count_the_number_of_specises#####
+ #######################################
+ 
+ #extract the [species name] from each header
+ seq = open("pseq.fasta")
+ listline = []
+ for line in seq:
+  if line.startswith('>'):
+   if "[" in line:
+    listline = listline + [line.split('[')[1].rstrip(']\n')]
+ 
+ #count the number of sequences and species
+ setline = set(listline)
+ sequence = len(listline)
+ count = len(setline)
+ if sequence < 10000:
+  print("\n" + str(sequence) + " sequences have been found")
+  print("there are now " + str(count) + " species in the output protein sequence file" + "\n")
+  print("the name of them are as follows: " + "\n")
+  print(setline)
+  print("\n" + "do you want to move on or try again with another taxonomy group ?")
+  userinput = input("moveon/tryagain: ")
+  ###check the user input
+  while True:
+   if userinput == "moveon" or userinput == "tryagain":
+    break
+   userinput = input("instruction can not be found, please do it again: ")
+   continue
+
+  if userinput == "tryagain":
+   continue  #go back to the beginning of the program and run again
+  elif userinput == 'moveon':
+   break 
+ #if there are more than 10000 sequences
+ else:
+   print("over 10,000 sequences have been found")
+   print("this surpasses the programs' limit")
+   print("please refine your input query and try again")
+   continue #go back to the beginning of the program
+
+#####################################################
+######conservation_area_between_sequences############
+#####################################################
+ 
+#create a function that can plot the level of conservation
+def conplot(filename):
+ subprocess.call("clustalo --force -i {} -o pseq.out -v --threads 30 --maxnumseq 10000".format(filename),shell=True)
+ subprocess.call("plotcon pseq.out -winsize 4 -graph svg",shell=True)
+ subprocess.call("firefox plotcon.svg",shell=True)
+print("----------------drawing plot of protein  conservation--------------")
+if sequence >250 :
+ #base on the similarity of the MSA output
+ #create a new fake sequence (a consensus sequence)
+ subprocess.call("clustalo --force -i pseq.fasta --outfmt msf -o pseq.msf -v --threads 30 --maxnumseq 10000",shell=True)
+ subprocess.call("cons -sequence pseq.msf -outseq fakeseq.fasta",shell=True)
+
+ seq= open("fakeseq.fasta")
+ for line in seq:
+  line= line.replace("x","")
+  newseq=open("newseq.fasta","a")
+  newseq.write(line)
+  newseq.close()
+
+ ###use the consensus sequence do protein against protein balst
+ subprocess.call("makeblastdb -in pseq.fasta -dbtype prot -out nem", shell=True)
+ subprocess.call("blastp -db nem -query newseq.fasta > blastoutput.out", shell=True)
+
+ #find the most similar 250 and abstract the sequence from fasta file
+ blast = open("blastoutput.out")
+ index = 0
+ while index< 251:
+  for line in blast:
+   if line.startswith(">"):
+    line = line.split(' ')
+    header = open("header.txt","a")
+    header.write(line[1])
+    header.write("\n")
+    header.close()
+   index =index+1
+ subprocess.call("/localdisk/data/BPSM/Assignment2/pullseq -i pseq.fasta -n header.txt > pseq2.fasta",shell=True)
+ conplot("pseq2.fasta")
+else:
+ conplot("pseq.fasta")
+
+
+###################################################
+##############find_the_motifs######################
+###################################################
+
+print("-----------------motif searching-----------------")
+def writesummary(line):
+      summary = open ("summary_motif","a")
+      summary.write(json.dumps(line)+'\n')
+      summary.close()
+if sequence >250:
+ seq = open("pseq2.fasta")
+else:
+ seq = open("pseq.fasta")
+motiflist = []
+for line in seq: #extract one sequence each time and write them into a newfile
+  if line.startswith('>') :
+    motifseq = open("motifseq",'w')
+    motifseq.write(line)
+    motifseq.close()
+  else:
+    motifseq = open("motifseq",'a')
+    motifseq.write(line)
+    motifseq.close()
+    #use the newfile to do motif search
+    subprocess.call("patmatmotifs -sequence {} -rname2 motifoutput -auto".format("motifseq"), shell=True)
+    motif = open("motifoutput.patmatmotifs")
+
+    #write the name of sequence and motif into a newfile
+    #print the motif name 
+    motifdic={}
+    for line in motif:
+      if re.search('Sequence',line):
+       seqname=line.rstrip('\n')
+      elif line.startswith('Motif') :
+       motifdic[seqname] = line.rstrip('\n')
+       writesummary(motifdic)
+       linelist = line.split(' ')
+       motiflist = motiflist +[linelist[2].rstrip('\n')]
+print("following motifs have been found in this subset sequences:")
+print (set(motiflist))
+
+##############################################
+#########draw_a_phylogenetic_tree#############
+##############################################
+
+print("---------------phylogenetic tree drawing--------------")
+subprocess.call("iqtree -s pseq.out -ntmax 30 -quiet",shell=True)
+
+
+##############################################
+#######delete_unnecessary_files###############
+##############################################
+os.remove("./groupsummary")
+os.remove("./motifseq")
+os.remove("./pseq.fasta")
+os.remove("./pseq.out")
+os.remove("./motifoutput.patmatmotifs")
+os.remove("./pseq.out.bionj")
+os.remove("./pseq.out.log")
+os.remove("./pseq.out.mldist")
+os.remove("./pseq.out.ckp.gz")
+os.remove("./pseq.out.model.gz")
+os.remove("./pseq.out.treefile")
+
+
+
